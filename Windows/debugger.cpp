@@ -1385,6 +1385,97 @@ void Debugger::OnProcessCreated() {
   }
 }
 
+// called when a crash occurs
+void Debugger::DumpCrashInfo() {
+  if (!SymInitialize(child_handle, NULL, TRUE)) {
+    return;
+  }
+
+  RetrieveThreadContext();
+  memcpy(&lastCrashInfo.context, &lcContext, sizeof(CONTEXT));
+
+  HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, thread_id);
+  if (hThread == INVALID_HANDLE_VALUE) {
+    return;
+  }
+
+  STACKFRAME64 stackFrame;
+  ZeroMemory(&stackFrame, sizeof(STACKFRAME64));
+
+  stackFrame.AddrPC.Offset = lastCrashInfo.context.Rip;
+  stackFrame.AddrPC.Mode = AddrModeFlat;
+  stackFrame.AddrFrame.Offset = lastCrashInfo.context.Rbp;
+  stackFrame.AddrFrame.Mode = AddrModeFlat;
+  stackFrame.AddrStack.Offset = lastCrashInfo.context.Rsp;
+  stackFrame.AddrStack.Mode = AddrModeFlat;
+
+  CONTEXT context;
+  memcpy(&context, &lastCrashInfo.context, sizeof(CONTEXT));
+  int idx = 0;
+  while (StackWalk64(
+    IMAGE_FILE_MACHINE_AMD64,
+    child_handle,
+    hThread,
+    &stackFrame,
+    &context,
+    NULL,
+    SymFunctionTableAccess64,
+    SymGetModuleBase64,
+    NULL
+  )) {
+    if (idx == MAX_CALL_STACK_DUMP) {
+      break;
+    }
+
+    DWORD64 address = stackFrame.AddrPC.Offset;
+    if (address == 0 && idx > 0) {
+      break;
+    } else {
+      lastCrashInfo.stack_frame_info[idx] = (StackFrameInfo*)malloc(sizeof(StackFrameInfo));
+      ZeroMemory(lastCrashInfo.stack_frame_info[idx], sizeof(StackFrameInfo));
+      lastCrashInfo.stack_frame_info[idx]->address = address;
+      if (address == 0) {
+        idx++;
+        continue;
+      }
+    }
+
+    IMAGEHLP_MODULE64 moduleInfo = {0,};
+    moduleInfo.SizeOfStruct = sizeof(IMAGEHLP_MODULE64);
+
+    if (SymGetModuleInfo64(child_handle, address, &moduleInfo)) {
+      memcpy(&lastCrashInfo.stack_frame_info[idx]->module_name, moduleInfo.ModuleName, 32);
+      lastCrashInfo.stack_frame_info[idx]->module_base = moduleInfo.BaseOfImage;
+    }
+
+    char buffer[sizeof(SYMBOL_INFO) + 256];
+    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
+    pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    pSymbol->MaxNameLen = 256;
+
+    if (SymFromAddr(child_handle, address, 0, pSymbol)) {
+      memcpy(&lastCrashInfo.stack_frame_info[idx]->function_name, pSymbol->Name, pSymbol->NameLen);
+      lastCrashInfo.stack_frame_info[idx]->offset = address - pSymbol->Address;
+    }
+    
+    idx++;
+  }
+  lastCrashInfo.stack_frame_depth = idx;
+
+  CloseHandle(hThread);
+
+  SymCleanup(child_handle);
+}
+
+void Debugger::CleanupCrashInfo() {
+  for (int i = 0; i < lastCrashInfo.stack_frame_depth; i++) {
+    if (lastCrashInfo.stack_frame_info[i])
+    free(lastCrashInfo.stack_frame_info[i]);
+  }
+
+  ZeroMemory(&lastCrashInfo, sizeof(CrashInfo));
+}
+
 // called when an exception in the target occurs
 DebuggerStatus Debugger::HandleExceptionInternal(EXCEPTION_RECORD *exception_record)
 {
@@ -1511,7 +1602,10 @@ DebuggerStatus Debugger::DebugLoop(uint32_t timeout, bool killing)
     case EXCEPTION_DEBUG_EVENT:
       if (!killing) {
         ret = HandleExceptionInternal(&DebugEv->u.Exception.ExceptionRecord);
-        if (ret == DEBUGGER_CRASHED) OnCrashed(&last_exception);
+        if (ret == DEBUGGER_CRASHED) {
+          DumpCrashInfo();
+          OnCrashed(&last_exception);
+        }
         if (ret != DEBUGGER_CONTINUE) return ret;
       } else {
         dbg_continue_status = DBG_EXCEPTION_NOT_HANDLED;
@@ -1746,6 +1840,7 @@ DebuggerStatus Debugger::Kill() {
   // delete any breakpoints that weren't hit
   DeleteBreakpoints();
 
+
   return dbg_last_status;
 }
 
@@ -1831,6 +1926,7 @@ DebuggerStatus Debugger::Continue(uint32_t timeout) {
     CloseHandle(child_thread_handle);
     child_handle = NULL;
     child_thread_handle = NULL;
+    CleanupCrashInfo();
   }
 
   return dbg_last_status;

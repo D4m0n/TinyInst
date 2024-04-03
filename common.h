@@ -23,9 +23,26 @@ limitations under the License.
 #include <inttypes.h>
 #include <list>
 
+#define MAX_CALL_STACK_DUMP 0xff
+
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32)
     #include <windows.h>
     #define ArgvEscape ArgvEscapeWindows
+
+    struct StackFrameInfo {
+    DWORD64 address;
+    char module_path[MAX_PATH];
+    char module_name[32];
+    DWORD64 module_base;
+    char function_name[256];
+    DWORD64 offset;
+    };
+
+    struct CrashInfo {
+      CONTEXT context;
+      StackFrameInfo* stack_frame_info[MAX_CALL_STACK_DUMP];
+      CHAR stack_frame_depth;
+    };
 #else
     #include <limits.h>
     #ifndef MAX_PATH
@@ -69,5 +86,7 @@ bool GetBinaryOption(const char *name, int argc, char** argv, bool default_value
 int GetIntOption(const char *name, int argc, char** argv, int default_value);
 
 char *ArgvToCmd(int argc, char** argv);
+
+
 
 #endif

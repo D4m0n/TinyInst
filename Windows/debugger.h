@@ -26,6 +26,7 @@ limitations under the License.
 #include "windows.h"
 #include "arch/x86/reg.h"
 
+
 enum CallingConvention {
   CALLCONV_MICROSOFT_X64,
   CALLCONV_THISCALL,
@@ -90,6 +91,7 @@ public:
   Exception GetLastException() {
     return last_exception;
   }
+
 
 protected:
 
@@ -192,6 +194,9 @@ private:
                             size_t size,
                             MemoryProtection protection);
 
+public:
+  CrashInfo lastCrashInfo;
+
 protected:
 
   bool child_entrypoint_reached;
@@ -238,6 +243,8 @@ private:
   void RetrieveThreadContext();
   void CreateException(EXCEPTION_RECORD *win_exception_record,
                        Exception *exception);
+  void DumpCrashInfo();
+  void CleanupCrashInfo();
 
   Exception last_exception;
   // thread id of the last event
